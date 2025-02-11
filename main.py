@@ -76,10 +76,10 @@ class MotorDriver:
             self.pca.set_pwm(self.PWMB, 0, int(4095 * speed))
 
     def forward(self, motor, speed=0.5):
-        self.motor_control(motor, 1, 0, speed)
+        self.motor_control(motor, 0, 1, speed)
 
     def backward(self, motor, speed=0.5):
-        self.motor_control(motor, 0, 1, speed)
+        self.motor_control(motor, 1, 0, speed)
 
     def stop(self, motor):
         self.motor_control(motor, 0, 0, 0)
