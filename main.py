@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 import time
 import cv2
@@ -26,7 +25,7 @@ class PCA9685:
         prescale = int(prescaleval + 0.5)
 
         old_mode = self.bus.read_byte_data(self.address, 0x00)
-        new_mode = (old_mode & 0x7F) | 0x10  # sleep
+        new_mode = (old_mode & 0x7F) | 0x10  # переход в режим сна
         self.bus.write_byte_data(self.address, 0x00, new_mode)
         self.bus.write_byte_data(self.address, 0xFE, prescale)
         self.bus.write_byte_data(self.address, 0x00, old_mode)
@@ -47,7 +46,7 @@ class MotorDriver:
         self.pca = PCA9685(address=0x60)  # Убедитесь, что адрес соответствует вашей плате
 
         # Конфигурация каналов (адаптируйте под вашу схему подключения)
-        # Предполагается, что мотор A — левый, мотор B — правый
+        # Предполагается, что мотор A – левый, мотор B – правый
         self.AIN1 = 10  # Направление 1 левого мотора
         self.AIN2 = 9   # Направление 2 левого мотора
         self.PWMA = 8   # ШИМ канал левого мотора
@@ -58,8 +57,8 @@ class MotorDriver:
     def motor_control(self, motor, in1, in2, speed):
         """Управление мотором
            motor: 'A' или 'B'
-           in1, in2: 0 или 1 — логические уровни для определения направления
-           speed: 0.0-1.0 (коэффициент заполнения ШИМ)
+           in1, in2: 0 или 1 — логические уровни для направления
+           speed: значение от 0.0 до 1.0 для ШИМ
         """
         if motor not in ['A', 'B']:
             raise ValueError("Motor must be 'A' or 'B'")
@@ -75,10 +74,10 @@ class MotorDriver:
             self.pca.set_pwm(self.BIN2, 0, 4095 if in2 else 0)
             self.pca.set_pwm(self.PWMB, 0, int(4095 * speed))
 
-    def forward(self, motor, speed=0.5):
+    def forward(self, motor, speed=0.0):
         self.motor_control(motor, 0, 1, speed)
 
-    def backward(self, motor, speed=0.5):
+    def backward(self, motor, speed=0.0):
         self.motor_control(motor, 1, 0, speed)
 
     def stop(self, motor):
@@ -87,7 +86,7 @@ class MotorDriver:
     def set_speeds(self, left_speed, right_speed):
         """
         Устанавливает скорости обоих моторов для движения вперед.
-        left_speed и right_speed - значения от 0.0 до 1.0.
+        left_speed и right_speed — значения от 0.0 до 1.0.
         """
         self.forward('A', left_speed)
         self.forward('B', right_speed)
@@ -129,17 +128,16 @@ def get_line_error(frame):
     """
     Обрабатывает кадр для поиска линии.
     Возвращает:
-      - error: смещение линии относительно центра области (положительное, если линия справа)
+      - error: смещение линии относительно центра ROI (положительное, если линия справа)
       - thresh: бинаризованное изображение области интереса (для отладки)
     """
-    # Преобразуем изображение в оттенки серого
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
 
-    # Берём нижнюю часть кадра (область, где ожидаем увидеть линию)
+    # Берём нижнюю часть кадра, где ожидаем увидеть линию
     roi = gray[int(height*0.7):height, :]
 
-    # Применяем пороговую фильтрацию: предполагается, что линия темная
+    # Применяем пороговую фильтрацию (предполагается, что линия темная на светлом фоне)
     _, thresh = cv2.threshold(roi, 60, 255, cv2.THRESH_BINARY_INV)
 
     # Вычисляем моменты для определения центра масс линии
@@ -147,9 +145,8 @@ def get_line_error(frame):
     if M["m00"] != 0:
         cx = int(M["m10"] / M["m00"])
     else:
-        cx = width // 2  # Если линия не обнаружена, считаем, что она по центру
+        cx = width // 2  # Если линия не обнаружена, считаем её центр
 
-    # Ошибка – разница между положением линии и центром изображения (ROI)
     error = cx - (width // 2)
     return error, thresh
 
@@ -157,19 +154,19 @@ def get_line_error(frame):
 # Основной цикл для слежения робота за линией
 # ===========================================
 def line_following():
-    # Инициализация камеры (номер устройства может отличаться)
+    # Инициализация камеры
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Ошибка открытия камеры")
         return
 
-    # Инициализация драйвера моторов
     driver = MotorDriver()
+    pid = PID(kp=0.001, ki=0.00, kd=0.00, setpoint=0)
 
-    # Инициализация PID-регулятора (настройте коэффициенты под свою систему)
-    pid = PID(kp=0.005, ki=0.0001, kd=0.001, setpoint=0)
-
-    base_speed = 0.3  # Базовая скорость движения
+    base_speed = 0.1  # Базовая скорость движения вперед
+    max_correction = 0.2  # Ограничение максимального отклонения скорости
+    min_speed = 0.1       # Минимальная скорость мотора, чтобы всегда двигаться вперед
+    max_speed = 0.3
 
     try:
         while True:
@@ -177,28 +174,26 @@ def line_following():
             if not ret:
                 continue
 
-            # Получение смещения линии от центра и бинаризованного изображения
             error, thresh = get_line_error(frame)
-
-            # Вычисление корректирующего сигнала с помощью PID
             correction = pid.update(error)
 
-            # Расчёт скоростей для левого и правого моторов
-            # Если линия смещена влево (error < 0), уменьшаем скорость левого мотора и наоборот
+            # Ограничиваем коррекцию, чтобы не снижать скорость моторов ниже минимума
+            correction = max(-max_correction, min(max_correction, correction))
+
+            # Корректировка скорости: если линия смещена, один мотор работает быстрее, другой медленнее,
+            # но оба мотора всегда движутся вперед
             left_speed = base_speed - correction
             right_speed = base_speed + correction
 
-            # Ограничение скоростей в диапазоне [0.0, 1.0]
-            left_speed = max(0.0, min(0.2, left_speed))
-            right_speed = max(0.0, min(0.2, right_speed))
+            # Ограничение скоростей в диапазоне [min_speed, max_speed]
+            left_speed = max(min_speed, min(max_speed, left_speed))
+            right_speed = max(min_speed, min(max_speed, right_speed))
 
-            # Установка скоростей моторов
             driver.set_speeds(left_speed, right_speed)
 
-            # Для отладки отображаем изображение и обработанную область
+            # Для отладки показываем изображения
             cv2.imshow("Threshold", thresh)
             cv2.imshow("Frame", frame)
-            # Неблокирующее ожидание (1 мс)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
